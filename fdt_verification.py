@@ -13,11 +13,8 @@ import cvxpy as cp
 import heapq
 from cvxpy.error import SolverError
 from time import time
-from multiprocessing import Pool
+import multiprocessing
 
-# TODO: RUN THE EXPERIMENTS
-# TODO: clear out the "fixed" thing
-# talk to saswati about putting up code
 
 # set the solver
 solver = None # let cvxpy decide
@@ -166,6 +163,12 @@ class VerificationDomain():
             return self.prob.value
         raise SolverError("solver failed with status: " + self.prob.status)
 
+# a linear splitting function
+def linear_split(x): return np.maximum(0, np.minimum(1, x+0.5))
+
+# the inverse of the linear split on [0,1]
+def inv_linear_split(x): return x-0.5
+
 # a collection of zero leaves, used in FDTNode to reduce redundancy
 zeros = dict()
 
@@ -264,7 +267,7 @@ class FDTNode():
         if top: self.forget()
         if self.memo is not None: return self.memo[0], 0
         if self.is_leaf:
-            self.memo = (1, 1)
+            self.memo = (0, 1)
         else:
             ld, ln = self.l.size(False)
             rd, rn = self.r.size(False)
@@ -273,7 +276,7 @@ class FDTNode():
    
     # compute bounds of a^T f(x) on domain D, where f is this FDTNode
     # top is a flag used internally to manage memoization
-    # returns: TODO update the returns
+    # returns:
     #   l the lower bound
     #   u the upper bound
     #   vs dictionary mapping each node n to (v(n,f), a(n), b(n)), where (a(n), b(n)) is the split at n 
@@ -478,7 +481,6 @@ def verify_fdt(f, D, b=None, tol=None, timeout=None, max_it=None):
                 # split the domain and bound the results
                 if s is not None: # we might reduce down to just a leaf and no split can be done
                     for E in D.split(*s):
-                        # TODO: deal with solver fail
                         l, u, v, g = f.bound(E)
                         s = get_split(v)
                         L = max(L, l)
@@ -568,7 +570,7 @@ def minimum_adversarial_perturbation(f, x, tol, norm="inf", timeout=None, upper_
     onesample = x.ndim == 1
     if onesample: x = x.reshape(1,-1)
     if x.shape[0] > 1 and n_workers > 1:
-        with Pool(n_workers) as p:
+        with multiprocessing.Pool(n_workers) as p:
             results = p.starmap(minimum_adversarial_perturbation, \
                                 [(f, xi, tol, norm, timeout, upper_lim, 1) for xi in x])
         return tuple([np.array([r[i] for r in results]) for i in range(4)])
@@ -628,7 +630,7 @@ def global_robustness(f, delta, epsilon, bound=10, n_workers=1, timeout=None):
     if isinstance(epsilon, list) or isinstance(epsilon, np.ndarray):  onesample = False
     else: epsilon = [epsilon]
     if (len(delta) > 1 or len(epsilon) > 1) and n_workers > 1:
-        with Pool(n_workers) as p:
+        with multiprocessing.Pool(n_workers) as p:
             results = p.starmap(global_robustness, \
                                 [(f, [d], [e], bound, n_workers, timeout) for d in delta for e in epsilon])
             return [r[0] for r in results]

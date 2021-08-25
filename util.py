@@ -10,6 +10,9 @@ This code is subject to the license terms contained in the code repo.
 
 import numpy as np
 import pickle
+import multiprocessing
+from multiprocessing.dummy import Pool as ThreadPool
+from time import time
 
 def load_model(dataset_name):
     with open("saved_models/%s.pkl" % (dataset_name), "rb") as f:
@@ -24,3 +27,13 @@ def make_grid(box, n):
     x1 = np.linspace(box[1][0], box[1][1], n)
     x0, x1 = np.meshgrid(x0, x1)
     return np.concatenate((x0.reshape(-1,1), x1.reshape(-1,1)), axis=1)
+
+def run_with_timeout(f, timeout, *args, **kwargs):
+    start = time()
+    if timeout is None:
+        raise Exception("bad timeout")
+    p = ThreadPool(1)
+    res = p.apply_async(f, args, kwargs)
+    out = res.get(max(timeout, 0.5))
+    if time() - start > timeout: raise multiprocessing.TimeoutError
+    return out

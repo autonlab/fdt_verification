@@ -11,8 +11,9 @@ This code is subject to the license terms contained in the code repo.
 import numpy as np
 from z3 import *
 from time import time
-from multiprocessing import Pool
+import multiprocessing
 from fdt_verification import VerificationDomain
+from util import run_with_timeout
 
 
 # encodes the FDT f into z3 logic for the z3 solver s
@@ -36,30 +37,36 @@ def fdt_to_z3(f, s):
 # verify a property a^T f(x) <= b on for FDT f on domain D
 # only uses linear constraints from D
 # optional stopping condition timeout: stop when timeout is reached (in seconds)
+#     The timeout for Z3's python interface is sometimes unreliable;
+#     this function uses a large minimum timeout to ensure that it doesn't hang forever
 # returns truth value (or None if unable to determine) and info
 # info is a dictionary with entries:
 #   time: the time in seconds for the process to stop
 #   counterexample: a point violating a^T f(x) <= b (only if the property is violated)
 def verify_fdt_z3(f, D, a, b, timeout=None):
-        info = dict()
-        start = time()
-        s = Solver()
-        x, y = fdt_to_z3(f, s)
-        for ai, bi in zip(D.A, D.b):
-            s.add(sum([ai[i]*x[i] for i in range(f.p)]) <= bi)
-        s.add(sum([a[i]*y[i] for i in range(f.q)]) > b)
-        if timeout: s.set("timeout", int(1000*timeout))
-        c = s.check()
-        info["time"] = time() - start
-        if c == sat:
-            # get value from model
-            m = s.model()
-            def v(x): return m[x].numerator().as_long()/m[x].denominator().as_long()
-            info["counterexample"] = np.array([v(xi) for xi in x])
-            return False, info
-        if c == unsat:
-            return True, info
+    info = dict()
+    start = time()
+    s = Solver()
+    x, y = fdt_to_z3(f, s)
+    for ai, bi in zip(D.A, D.b):
+        s.add(sum([ai[i]*x[i] for i in range(f.p)]) <= bi)
+    s.add(sum([a[i]*y[i] for i in range(f.q)]) > b)
+	# z3 sometimes hangs when given too small a timeout
+    if timeout: s.set("timeout", max(int(1000*timeout), 300000))
+    c = s.check()
+    info["time"] = time() - start
+    if info["time"] > timeout:
+        info["time"] = timeout
         return None, info
+    if c == sat:
+        # get value from model
+        m = s.model()
+        def v(x): return m[x].numerator().as_long()/m[x].denominator().as_long()
+        info["counterexample"] = np.array([v(xi) for xi in x])
+        return False, info
+    if c == unsat:
+        return True, info
+    return None, info
 
     
 # check local adversarial robustness of f at point(s) x with radius delta
@@ -118,7 +125,7 @@ def minimum_adversarial_perturbation_z3(f, x, tol, timeout=None, upper_lim=None,
     onesample = x.ndim == 1
     if onesample: x = x.reshape(1,-1)
     if x.shape[0] > 1 and n_workers > 1:
-        with Pool(n_workers) as p:
+        with multiprocessing.Pool(n_workers, maxtasksperchild=1) as p:
             results = p.starmap(minimum_adversarial_perturbation_z3, \
                                 [(f, xi, tol, timeout, upper_lim, 1) for xi in x])
         return tuple([np.array([r[i] for r in results]) for i in range(4)])
@@ -157,7 +164,7 @@ def minimum_adversarial_perturbation_z3(f, x, tol, timeout=None, upper_lim=None,
                 if s: perturbation[i] = ce
             else: 
                 lo = d
-        dist[i] = lo # TODO: set this to hi and return the minimal perturbation
+        dist[i] = lo 
         times[i] = time() - start
     if onesample: return perturbation[0], dist[0], exact[0], times[0]
     return perturbation, dist, exact, times
