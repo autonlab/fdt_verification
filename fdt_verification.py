@@ -215,7 +215,7 @@ class FDTNode():
         n.memo = None
         return n
     
-    # initialize as a constant with output size q and value v
+    # initialize as a leaf with uniform output with value v and size q
     # return self
     def const(q, v):
         a = np.zeros(q)
@@ -279,9 +279,9 @@ class FDTNode():
     # returns:
     #   l the lower bound
     #   u the upper bound
-    #   vs dictionary mapping each node n to (v(n,f), a(n), b(n)), where (a(n), b(n)) is the split at n 
+    #   s the best split (v, a, b), where v is the value of the split and a, b are the coefficients and intercept of the split
     #   g the dynamically pruned copy of f
-    # see the paper for details on v(f,n)
+    # see the paper for details on split value v
     def bound(self, D, top=True):
         if top: self.forget()
             
@@ -291,7 +291,7 @@ class FDTNode():
         
         # leaves just return the value
         if self.is_leaf:
-            self.memo = (self.av, self.av, dict(), self)
+            self.memo = (self.av, self.av, None, self)
             return self.memo
         
         # compute bounds (see the paper for details)
@@ -304,8 +304,8 @@ class FDTNode():
         if self.eps and 1-smin < self.eps:  # check if we can remove left subtree
             self.memo = self.r.bound(D, False)
             return self.memo
-        lL, uL, vL, fL = self.l.bound(D, False)
-        lR, uR, vR, fR = self.r.bound(D, False)
+        lL, uL, sL, fL = self.l.bound(D, False)
+        lR, uR, sR, fR = self.r.bound(D, False)
         l0 = (1-smin)*lL + smin*lR
         l1 = (1-smax)*lL + smax*lR
         u0 = (1-smin)*uL + smin*uR
@@ -313,22 +313,26 @@ class FDTNode():
         l = min(l0, l1)
         u = max(u0, u1)
         
-        # update vs
+        # compute split for this node
         v = 0.5*(abs(l0 - l1) + abs(u0 - u1))
         anorm = np.linalg.norm(self.a)
         if anorm == 0: anorm = 1
         a, b = self.a/anorm, (self.t(sbar) - self.b)/anorm
-        vs = dict({self: [v, a, b]})
-        vs.update({n: [0, a, b] for n, (_, a, b) in vL.items()})
-        vs.update({n: [0, a, b] for n, (_, a, b) in vR.items()})
-        for n, (v, _, _) in vL.items(): vs[n][0] += (1-sbar)*v
-        for n, (v, _, _) in vR.items(): vs[n][0] += sbar*v
+        s = (v, a, b)
+        
+        # find best split so far
+        if sL is not None:
+            vL = (1-sbar)*sL[0]
+            if vL > s[0]: s = (vL, sL[1], sL[2])
+        if sR is not None:
+            vR = sbar*sR[0]
+            if vR > s[0]: s = (vR, sR[1], sR[2])
         
         # create pruned version of self by using pruned subtrees as children
         g = FDTNode.internal(self.a, self.b, self.s, self.t, fL, fR, self.eps)
         
         # memoize results
-        self.memo = (l, u, vs, g)
+        self.memo = (l, u, s, g)
         return self.memo
     
     # return deep copy of self
@@ -416,13 +420,6 @@ class KV():
     def __lt__(self, other):
         return other.k < self.k # inverted since heapq is a min heap   
 
-
-# return the optimal split (a, b) from dictionary vs obtained from FDTNode.bound
-def get_split(vs):
-    if len(vs) == 0: return None
-    n = max(vs, key=lambda n: vs[n][0])
-    return vs[n][1:]
-    
 # either maximize or verify a property of FDTNode f on domain D
 # coefficients must be set for all leaves using FDTNode.set_bounding_coefficients
 # at least one stopping condition must be specified:
@@ -447,14 +444,13 @@ def verify_fdt(f, D, b=None, tol=None, timeout=None, max_it=None):
         info["lbound"] = []
         info["ubound"] = []
         try:
-            L, U, v, f = f.bound(D)
+            L, U, s, f = f.bound(D)
         except SolverError:
             info["status"] = "solver failed"
             info["iterations"] = 1
             info["time"] = time() - start
             if b is None: return None, None, info
             else: return None, info
-        s = get_split(v)
         i, j = 1, 1
         h = []
         if b is None or L > b: info["x"] = D.get_interior_point()
@@ -480,9 +476,8 @@ def verify_fdt(f, D, b=None, tol=None, timeout=None, max_it=None):
             try: # catch solver failures
                 # split the domain and bound the results
                 if s is not None: # we might reduce down to just a leaf and no split can be done
-                    for E in D.split(*s):
-                        l, u, v, g = f.bound(E)
-                        s = get_split(v)
+                    for E in D.split(*s[1:]):
+                        l, u, s, g = f.bound(E)
                         L = max(L, l)
                         heapq.heappush(h, KV(u, (l, E, s, g, j+1)))
                         if b is not None and l > b: break
